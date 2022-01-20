@@ -29,7 +29,6 @@ import (
 	"github.com/go-chassis/cari/pkg/errsvc"
 	"github.com/go-chassis/cari/sync"
 	"github.com/go-chassis/foundation/gopool"
-	"github.com/jinzhu/copier"
 	"github.com/little-cui/etcdadpt"
 
 	"github.com/apache/servicecomb-service-center/datasource"
@@ -57,14 +56,8 @@ type MetadataManager struct {
 	// SchemaNotEditable determines whether schema modification is not allowed
 	SchemaNotEditable bool
 	// InstanceTTL options
-	InstanceTTL int64
-}
-
-func newMetadataManager(schemaNotEditable bool, instanceTTL int64) datasource.MetadataManager {
-	return &MetadataManager{
-		SchemaNotEditable: schemaNotEditable,
-		InstanceTTL:       instanceTTL,
-	}
+	InstanceTTL        int64
+	InstanceProperties map[string]string
 }
 
 // RegisterService implement:
@@ -299,16 +292,9 @@ func (ds *MetadataManager) ListServiceDetail(ctx context.Context, request *pb.Ge
 			return nil, pb.NewError(pb.ErrInternal, err.Error())
 		}
 		serviceDetail.MicroService = service
-		tmpServiceDetail := &pb.ServiceDetail{}
-		err = copier.CopyWithOption(tmpServiceDetail, serviceDetail, copier.Option{DeepCopy: true})
+		tmpServiceDetail, err := datasource.NewServiceOverview(serviceDetail, ds.InstanceProperties)
 		if err != nil {
-			return nil, pb.NewError(pb.ErrInternal, err.Error())
-		}
-		tmpServiceDetail.MicroService.Properties = nil
-		tmpServiceDetail.MicroService.Schemas = nil
-		instances := tmpServiceDetail.Instances
-		for _, instance := range instances {
-			instance.Properties = nil
+			return nil, err
 		}
 		allServiceDetails = append(allServiceDetails, tmpServiceDetail)
 	}
@@ -543,17 +529,17 @@ func (ds *MetadataManager) registerInstance(ctx context.Context, request *pb.Reg
 			instanceFlag, instanceID, remoteIP), nil)
 		return "", pb.NewError(pb.ErrServiceNotExists, "Service does not exist.")
 	}
-	sendEvent(sync.CreateAction, datasource.ResourceInstance, request)
+	sendEvent(ctx, sync.CreateAction, datasource.ResourceInstance, request)
 	log.Info(fmt.Sprintf("register instance %s, instanceID %s, operator %s",
 		instanceFlag, instanceID, remoteIP))
 	return instanceID, nil
 }
 
-func sendEvent(action string, resourceType string, resource interface{}) {
-	if !datasource.EnableSync {
+func sendEvent(ctx context.Context, action string, resourceType string, resource interface{}) {
+	if !util.EnableSync(ctx) {
 		return
 	}
-	event.Publish(action, resourceType, resource)
+	event.Publish(ctx, action, resourceType, resource)
 }
 
 func (ds *MetadataManager) calcInstanceTTL(instance *pb.MicroServiceInstance) int64 {
@@ -599,7 +585,7 @@ func (ds *MetadataManager) sendHeartbeatInstead(ctx context.Context, instance *p
 
 func (ds *MetadataManager) ExistInstance(ctx context.Context, request *pb.MicroServiceInstanceKey) (*pb.GetExistenceByIDResponse, error) {
 	domainProject := util.ParseDomainProject(ctx)
-	exist, err := eutil.InstanceExist(ctx, domainProject, request.ServiceId, request.InstanceId)
+	exist, err := eutil.ExistInstance(ctx, domainProject, request.ServiceId, request.InstanceId)
 	if err != nil {
 		return nil, pb.NewError(pb.ErrInternal, err.Error())
 	}
@@ -883,6 +869,31 @@ func (ds *MetadataManager) reshapeProviderKey(ctx context.Context, provider *pb.
 	return provider, nil
 }
 
+func (ds *MetadataManager) PutInstance(ctx context.Context, request *pb.RegisterInstanceRequest) error {
+	domainProject := util.ParseDomainProject(ctx)
+	instance := request.Instance
+	serviceID := instance.ServiceId
+	instanceID := instance.InstanceId
+	exist, err := eutil.ExistInstance(ctx, domainProject, serviceID, instanceID)
+	if err != nil {
+		log.Error(fmt.Sprintf("update instance[%s/%s] failed", serviceID, instanceID), err)
+		return pb.NewError(pb.ErrInternal, err.Error())
+	}
+	if !exist {
+		log.Error(fmt.Sprintf("update instance[%s/%s] failed, instance does not exist",
+			serviceID, instanceID), nil)
+		return pb.NewError(pb.ErrInstanceNotExists, "Service instance does not exist.")
+	}
+
+	if err := eutil.UpdateInstance(ctx, domainProject, instance); err != nil {
+		log.Error(fmt.Sprintf("update instance[%s/%s] failed", serviceID, instanceID), err)
+		return err
+	}
+	sendEvent(ctx, sync.UpdateAction, datasource.ResourceInstance, instance)
+	log.Info(fmt.Sprintf("update instance[%s/%s] successfully", serviceID, instanceID))
+	return nil
+}
+
 func (ds *MetadataManager) PutInstanceStatus(ctx context.Context, request *pb.UpdateInstanceStatusRequest) error {
 	domainProject := util.ParseDomainProject(ctx)
 	updateStatusFlag := util.StringJoin([]string{request.ServiceId, request.InstanceId, request.Status}, path.SPLIT)
@@ -899,13 +910,13 @@ func (ds *MetadataManager) PutInstanceStatus(ctx context.Context, request *pb.Up
 
 	copyInstanceRef := *instance
 	copyInstanceRef.Status = request.Status
+	copyInstanceRef.ModTimestamp = strconv.FormatInt(time.Now().Unix(), 10)
 
 	if err := eutil.UpdateInstance(ctx, domainProject, &copyInstanceRef); err != nil {
 		log.Error(fmt.Sprintf("update instance[%s] status failed", updateStatusFlag), err)
 		return err
 	}
-
-	sendEvent(sync.UpdateAction, datasource.ResourceInstance, copyInstanceRef)
+	sendEvent(ctx, sync.UpdateAction, datasource.ResourceInstance, copyInstanceRef)
 	log.Info(fmt.Sprintf("update instance[%s] status successfully", updateStatusFlag))
 	return nil
 }
@@ -926,13 +937,14 @@ func (ds *MetadataManager) PutInstanceProperties(ctx context.Context, request *p
 
 	copyInstanceRef := *instance
 	copyInstanceRef.Properties = request.Properties
+	copyInstanceRef.ModTimestamp = strconv.FormatInt(time.Now().Unix(), 10)
 
 	if err := eutil.UpdateInstance(ctx, domainProject, &copyInstanceRef); err != nil {
 		log.Error(fmt.Sprintf("update instance[%s] properties failed", instanceFlag), err)
 		return err
 	}
 
-	sendEvent(sync.UpdateAction, datasource.ResourceInstance, copyInstanceRef)
+	sendEvent(ctx, sync.UpdateAction, datasource.ResourceInstance, copyInstanceRef)
 	log.Info(fmt.Sprintf("update instance[%s] properties successfully", instanceFlag))
 	return nil
 }
@@ -960,12 +972,13 @@ func (ds *MetadataManager) SendManyHeartbeat(ctx context.Context, request *pb.He
 	for heartbeat := range instancesHbRst {
 		count++
 		instanceHbRstArr = append(instanceHbRstArr, heartbeat)
+		sendEvent(ctx, sync.UpdateAction, datasource.ResourceHeartbeat,
+			&pb.HeartbeatRequest{ServiceId: heartbeat.ServiceId, InstanceId: heartbeat.InstanceId})
 		if count == noMultiCounter {
 			close(instancesHbRst)
 		}
 	}
 	log.Info(fmt.Sprintf("batch update heartbeats, %v", instanceHbRstArr))
-	sendEvent(sync.UpdateAction, datasource.ResourceHeartbeatSet, request)
 	return &pb.HeartbeatSetResponse{
 		Instances: instanceHbRstArr,
 	}, nil
@@ -985,7 +998,7 @@ func (ds *MetadataManager) UnregisterInstance(ctx context.Context, request *pb.U
 			instanceFlag, remoteIP), err)
 		return err
 	}
-	sendEvent(sync.DeleteAction, datasource.ResourceInstance, request)
+	sendEvent(ctx, sync.DeleteAction, datasource.ResourceInstance, request)
 	log.Info(fmt.Sprintf("unregister instance[%s], operator %s", instanceFlag, remoteIP))
 	return nil
 }
@@ -1009,7 +1022,7 @@ func (ds *MetadataManager) SendHeartbeat(ctx context.Context, request *pb.Heartb
 		log.Info(fmt.Sprintf("heartbeat successful, renew instance[%s] ttl to %d. operator %s",
 			instanceFlag, ttl, remoteIP))
 	}
-	sendEvent(sync.UpdateAction, datasource.ResourceHeartbeat, request)
+	sendEvent(ctx, sync.UpdateAction, datasource.ResourceHeartbeat, request)
 	return nil
 }
 

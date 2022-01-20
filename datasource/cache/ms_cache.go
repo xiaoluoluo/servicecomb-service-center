@@ -21,11 +21,12 @@ import (
 	"context"
 	"strings"
 
+	"github.com/go-chassis/cari/discovery"
+
 	"github.com/apache/servicecomb-service-center/datasource"
-	"github.com/apache/servicecomb-service-center/datasource/mongo/client/model"
+	"github.com/apache/servicecomb-service-center/datasource/mongo/model"
 	"github.com/apache/servicecomb-service-center/datasource/mongo/sd"
 	"github.com/apache/servicecomb-service-center/pkg/util"
-	"github.com/go-chassis/cari/discovery"
 )
 
 func GetProviderServiceOfDeps(provider *discovery.MicroService) (*discovery.MicroServiceDependency, bool) {
@@ -57,6 +58,9 @@ func genDepServiceKey(ruleType string, service *discovery.MicroService) string {
 }
 
 func GetMicroServiceInstancesByID(ctx context.Context, serviceID string) ([]*discovery.MicroServiceInstance, bool) {
+	if util.NoCache(ctx) {
+		return nil, false
+	}
 	index := genServiceIDIndex(ctx, serviceID)
 	cacheInstances := sd.Store().Instance().Cache().GetValue(index)
 	insts, ok := transCacheToMicroInsts(cacheInstances)
@@ -109,6 +113,9 @@ func GetServiceID(ctx context.Context, key *discovery.MicroServiceKey) (serviceI
 }
 
 func GetServiceByIDAcrossDomain(ctx context.Context, serviceID string) (*model.Service, bool) {
+	if util.NoCache(ctx) {
+		return nil, false
+	}
 	index := genServiceIDIndexAcrossDomain(ctx, serviceID)
 	cacheRes := sd.Store().Service().Cache().GetValue(index)
 
@@ -182,6 +189,9 @@ func genServiceNameIndex(ctx context.Context, key *discovery.MicroServiceKey) st
 }
 
 func CountInstances(ctx context.Context, serviceID string) (int, bool) {
+	if util.NoCache(ctx) {
+		return 0, false
+	}
 	index := genServiceIDIndex(ctx, serviceID)
 	cacheInstances := sd.Store().Instance().Cache().GetValue(index)
 	if len(cacheInstances) == 0 {
@@ -191,6 +201,9 @@ func CountInstances(ctx context.Context, serviceID string) (int, bool) {
 }
 
 func GetInstance(ctx context.Context, serviceID string, instanceID string) (*model.Instance, bool) {
+	if util.NoCache(ctx) {
+		return nil, false
+	}
 	index := generateInstanceIDIndex(util.ParseDomainProject(ctx), serviceID, instanceID)
 	cacheInstance := sd.Store().Instance().Cache().GetValue(index)
 	insts, ok := transCacheToInsts(cacheInstance)
@@ -201,6 +214,9 @@ func GetInstance(ctx context.Context, serviceID string, instanceID string) (*mod
 }
 
 func GetInstances(ctx context.Context) ([]*model.Instance, bool) {
+	if util.NoCache(ctx) {
+		return nil, false
+	}
 	index := util.ParseDomainProject(ctx)
 	cacheInstance := sd.Store().Instance().Cache().GetValue(index)
 	insts, ok := transCacheToInsts(cacheInstance)

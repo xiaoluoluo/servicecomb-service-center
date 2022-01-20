@@ -20,13 +20,8 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
-	"net"
 	"os"
-	"strings"
-	"time"
 
-	syncv1 "github.com/apache/servicecomb-service-center/api/sync/v1"
 	"github.com/apache/servicecomb-service-center/datasource"
 	nf "github.com/apache/servicecomb-service-center/pkg/event"
 	"github.com/apache/servicecomb-service-center/pkg/log"
@@ -36,20 +31,12 @@ import (
 	"github.com/apache/servicecomb-service-center/server/command"
 	"github.com/apache/servicecomb-service-center/server/config"
 	"github.com/apache/servicecomb-service-center/server/event"
-	"github.com/apache/servicecomb-service-center/server/metrics"
 	"github.com/apache/servicecomb-service-center/server/plugin/security/tlsconf"
-	"github.com/apache/servicecomb-service-center/server/rpc/sync"
 	"github.com/apache/servicecomb-service-center/server/service/gov"
 	"github.com/apache/servicecomb-service-center/server/service/rbac"
 	snf "github.com/apache/servicecomb-service-center/server/syncernotify"
 	"github.com/go-chassis/foundation/gopool"
-	"github.com/go-chassis/go-chassis/v2"
-	chassisServer "github.com/go-chassis/go-chassis/v2/core/server"
 	"github.com/little-cui/etcdadpt"
-)
-
-const (
-	defaultCollectPeriod = 30 * time.Second
 )
 
 var server ServiceCenterServer
@@ -78,15 +65,6 @@ func (s *ServiceCenterServer) Run() {
 
 	s.startServices()
 
-	chassis.RegisterSchema("grpc", &sync.Server{},
-		chassisServer.WithRPCServiceDesc(&syncv1.EventService_ServiceDesc))
-
-	go func() {
-		if err := chassis.Run(); err != nil {
-			log.Warn(err.Error())
-		}
-	}()
-
 	signal.RegisterListener()
 
 	s.waitForQuit()
@@ -103,8 +81,6 @@ func (s *ServiceCenterServer) waitForQuit() {
 
 func (s *ServiceCenterServer) initialize() {
 	s.initEndpoints()
-	// Metrics
-	s.initMetrics()
 	// SSL
 	s.initSSL()
 	// Datasource
@@ -148,9 +124,10 @@ func (s *ServiceCenterServer) initDatasource() {
 				}
 			},
 		},
-		EnableCache:       config.GetRegistry().EnableCache,
-		InstanceTTL:       config.GetRegistry().InstanceTTL,
-		SchemaNotEditable: config.GetRegistry().SchemaNotEditable,
+		EnableCache:        config.GetRegistry().EnableCache,
+		SchemaNotEditable:  config.GetRegistry().SchemaNotEditable,
+		InstanceTTL:        config.GetRegistry().InstanceTTL,
+		InstanceProperties: config.GetStringMap("registry.instance.properties"),
 	}); err != nil {
 		log.Fatal("init datasource failed", err)
 	}
@@ -161,32 +138,6 @@ func getDatasourceTLSConfig() (*tls.Config, error) {
 		return tlsconf.ClientConfig()
 	}
 	return nil, nil
-}
-
-func (s *ServiceCenterServer) initMetrics() {
-	if !config.GetBool("metrics.enable", false) {
-		return
-	}
-	interval, err := time.ParseDuration(strings.TrimSpace(config.GetString("metrics.interval", defaultCollectPeriod.String())))
-	if err != nil {
-		log.Error(fmt.Sprintf("invalid metrics config[interval], set default %s", defaultCollectPeriod), err)
-	}
-	if interval <= time.Second {
-		interval = defaultCollectPeriod
-	}
-	var instance string
-	if len(s.Endpoint.Host) > 0 {
-		instance = net.JoinHostPort(s.Endpoint.Host, s.Endpoint.Port)
-	} else {
-		log.Fatal("init metrics InstanceName failed", nil)
-	}
-
-	if err := metrics.Init(metrics.Options{
-		Interval: interval,
-		Instance: instance,
-	}); err != nil {
-		log.Fatal("init metrics failed", err)
-	}
 }
 
 func (s *ServiceCenterServer) initSSL() {

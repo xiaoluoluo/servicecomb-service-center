@@ -28,12 +28,19 @@ import (
 	"strings"
 	"time"
 
+	dmongo "github.com/go-chassis/cari/db/mongo"
+	"github.com/go-chassis/cari/discovery"
+	"github.com/go-chassis/cari/pkg/errsvc"
+	"github.com/go-chassis/foundation/gopool"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
 	"github.com/apache/servicecomb-service-center/datasource"
 	"github.com/apache/servicecomb-service-center/datasource/cache"
-	"github.com/apache/servicecomb-service-center/datasource/mongo/client"
-	"github.com/apache/servicecomb-service-center/datasource/mongo/client/dao"
-	"github.com/apache/servicecomb-service-center/datasource/mongo/client/model"
+	"github.com/apache/servicecomb-service-center/datasource/mongo/dao"
 	"github.com/apache/servicecomb-service-center/datasource/mongo/heartbeat"
+	"github.com/apache/servicecomb-service-center/datasource/mongo/model"
 	mutil "github.com/apache/servicecomb-service-center/datasource/mongo/util"
 	"github.com/apache/servicecomb-service-center/datasource/schema"
 	"github.com/apache/servicecomb-service-center/pkg/log"
@@ -41,13 +48,6 @@ import (
 	apt "github.com/apache/servicecomb-service-center/server/core"
 	"github.com/apache/servicecomb-service-center/server/plugin/uuid"
 	quotasvc "github.com/apache/servicecomb-service-center/server/service/quota"
-	"github.com/go-chassis/cari/discovery"
-	"github.com/go-chassis/cari/pkg/errsvc"
-	"github.com/go-chassis/foundation/gopool"
-	"github.com/jinzhu/copier"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const baseTen = 10
@@ -61,7 +61,8 @@ type MetadataManager struct {
 	// SchemaNotEditable determines whether schema modification is not allowed
 	SchemaNotEditable bool
 	// InstanceTTL options
-	InstanceTTL int64
+	InstanceTTL        int64
+	InstanceProperties map[string]string
 }
 
 func (ds *MetadataManager) RegisterService(ctx context.Context, request *discovery.CreateServiceRequest) (*discovery.CreateServiceResponse, error) {
@@ -103,9 +104,10 @@ func (ds *MetadataManager) RegisterService(ctx context.Context, request *discove
 			}, nil
 		}
 	}
-	insertRes, err := client.GetMongoClient().Insert(ctx, model.CollectionService, &model.Service{Domain: domain, Project: project, Service: service})
+	insertRes, err := dmongo.GetClient().GetDB().Collection(model.CollectionService).InsertOne(ctx,
+		&model.Service{Domain: domain, Project: project, Service: service})
 	if err != nil {
-		if client.IsDuplicateKey(err) {
+		if dao.IsDuplicateKey(err) {
 			serviceIDInner, err := GetServiceID(ctx, &discovery.MicroServiceKey{
 				Environment: service.Environment,
 				AppId:       service.AppId,
@@ -273,25 +275,33 @@ func (ds *MetadataManager) UnregisterService(ctx context.Context, request *disco
 			return discovery.NewError(discovery.ErrDependedOnConsumer, "Can not delete this service, other service rely it.")
 		}
 		//todo wait for dep interface
-		instancesExist, err := client.GetMongoClient().DocExist(ctx, model.CollectionInstance, bson.M{mutil.ConnectWithDot([]string{model.ColumnInstance, model.ColumnServiceID}): serviceID})
+		num, err := dmongo.GetClient().GetDB().Collection(model.CollectionInstance).CountDocuments(ctx, bson.M{mutil.ConnectWithDot([]string{model.ColumnInstance, model.ColumnServiceID}): serviceID})
 		if err != nil {
 			log.Error(fmt.Sprintf("delete micro-service[%s] failed, get instances number failed, operator: %s",
 				serviceID, remoteIP), err)
 			return discovery.NewError(discovery.ErrUnavailableBackend, err.Error())
 		}
-		if instancesExist {
+		if num != 0 {
 			log.Error(fmt.Sprintf("delete micro-service[%s] failed, service deployed instances, operator: %s",
 				serviceID, remoteIP), nil)
 			return discovery.NewError(discovery.ErrDeployedInstance, "Can not delete the service deployed instance(s).")
 		}
-
 	}
 
-	schemaOps := client.MongoOperation{Table: model.CollectionSchema, Models: []mongo.WriteModel{mongo.NewDeleteManyModel().SetFilter(bson.M{model.ColumnServiceID: serviceID})}}
-	instanceOps := client.MongoOperation{Table: model.CollectionInstance, Models: []mongo.WriteModel{mongo.NewDeleteManyModel().SetFilter(bson.M{mutil.ConnectWithDot([]string{model.ColumnInstance, model.ColumnServiceID}): serviceID})}}
-	serviceOps := client.MongoOperation{Table: model.CollectionService, Models: []mongo.WriteModel{mongo.NewDeleteOneModel().SetFilter(bson.M{mutil.ConnectWithDot([]string{model.ColumnService, model.ColumnServiceID}): serviceID})}}
-
-	err = client.GetMongoClient().MultiTableBatchUpdate(ctx, []client.MongoOperation{schemaOps, instanceOps, serviceOps})
+	_, err = dmongo.GetClient().GetDB().Collection(model.CollectionSchema).BulkWrite(ctx,
+		[]mongo.WriteModel{mongo.NewDeleteManyModel().SetFilter(bson.M{model.ColumnServiceID: serviceID})})
+	if err != nil {
+		log.Error(fmt.Sprintf("micro-service[%s] failed, operator: %s", serviceID, remoteIP), err)
+		return discovery.NewError(discovery.ErrUnavailableBackend, err.Error())
+	}
+	_, err = dmongo.GetClient().GetDB().Collection(model.CollectionInstance).BulkWrite(ctx,
+		[]mongo.WriteModel{mongo.NewDeleteManyModel().SetFilter(bson.M{mutil.ConnectWithDot([]string{model.ColumnInstance, model.ColumnServiceID}): serviceID})})
+	if err != nil {
+		log.Error(fmt.Sprintf("micro-service[%s] failed, operator: %s", serviceID, remoteIP), err)
+		return discovery.NewError(discovery.ErrUnavailableBackend, err.Error())
+	}
+	_, err = dmongo.GetClient().GetDB().Collection(model.CollectionService).BulkWrite(ctx,
+		[]mongo.WriteModel{mongo.NewDeleteOneModel().SetFilter(bson.M{mutil.ConnectWithDot([]string{model.ColumnService, model.ColumnServiceID}): serviceID})})
 	if err != nil {
 		log.Error(fmt.Sprintf("micro-service[%s] failed, operator: %s", serviceID, remoteIP), err)
 		return discovery.NewError(discovery.ErrUnavailableBackend, err.Error())
@@ -327,7 +337,7 @@ func (ds *MetadataManager) PutServiceProperties(ctx context.Context, request *di
 	err := dao.UpdateService(ctx, filter, updateFilter)
 	if err != nil {
 		log.Error(fmt.Sprintf("update service %s properties failed, update mongo failed", request.ServiceId), err)
-		if err == client.ErrNoDocuments {
+		if err == dao.ErrNoDocuments {
 			return discovery.NewError(discovery.ErrServiceNotExists, "Service does not exist.")
 		}
 		return discovery.NewError(discovery.ErrUnavailableBackend, "Update doc in mongo failed.")
@@ -417,16 +427,9 @@ func (ds *MetadataManager) ListServiceDetail(ctx context.Context, request *disco
 			return nil, discovery.NewError(discovery.ErrInternal, err.Error())
 		}
 		serviceDetail.MicroService = mgSvc.Service
-		tmpServiceDetail := &discovery.ServiceDetail{}
-		err = copier.CopyWithOption(tmpServiceDetail, serviceDetail, copier.Option{DeepCopy: true})
+		tmpServiceDetail, err := datasource.NewServiceOverview(serviceDetail, ds.InstanceProperties)
 		if err != nil {
-			return nil, discovery.NewError(discovery.ErrInternal, err.Error())
-		}
-		tmpServiceDetail.MicroService.Properties = nil
-		tmpServiceDetail.MicroService.Schemas = nil
-		instances := tmpServiceDetail.Instances
-		for _, instance := range instances {
-			instance.Properties = nil
+			return nil, err
 		}
 		allServiceDetails = append(allServiceDetails, tmpServiceDetail)
 	}
@@ -475,7 +478,7 @@ func (ds *MetadataManager) PutManyTags(ctx context.Context, request *discovery.A
 		return nil
 	}
 	log.Error(fmt.Sprintf("update service %s tags failed.", request.ServiceId), err)
-	if err == client.ErrNoDocuments {
+	if err == dao.ErrNoDocuments {
 		return discovery.NewError(discovery.ErrServiceNotExists, err.Error())
 	}
 	return discovery.NewError(discovery.ErrInternal, err.Error())
@@ -667,11 +670,11 @@ func (ds *MetadataManager) DeleteSchema(ctx context.Context, request *discovery.
 		return discovery.NewError(discovery.ErrSchemaNotExists, "DeleteSchema failed for service not exist.")
 	}
 	filter := mutil.NewBasicFilter(ctx, mutil.ServiceID(request.ServiceId), mutil.SchemaID(request.SchemaId))
-	res, err := client.GetMongoClient().DocDelete(ctx, model.CollectionSchema, filter)
+	result, err := dmongo.GetClient().GetDB().Collection(model.CollectionSchema).DeleteOne(ctx, filter)
 	if err != nil {
 		return discovery.NewError(discovery.ErrUnavailableBackend, "DeleteSchema failed for delete schema failed.")
 	}
-	if !res {
+	if result != nil && result.DeletedCount == 0 {
 		return schema.ErrSchemaNotFound
 	}
 	return nil
@@ -826,13 +829,13 @@ func (ds *MetadataManager) modifySchemas(ctx context.Context, service *discovery
 		serviceOps = append(serviceOps, mongo.NewUpdateOneModel().SetUpdate(updateFilter).SetFilter(filter))
 	}
 	if len(schemasOps) > 0 {
-		_, err = client.GetMongoClient().BatchUpdate(ctx, model.CollectionSchema, schemasOps)
+		_, err = dmongo.GetClient().GetDB().Collection(model.CollectionSchema).BulkWrite(ctx, schemasOps)
 		if err != nil {
 			return discovery.NewError(discovery.ErrInternal, err.Error())
 		}
 	}
 	if len(serviceOps) > 0 {
-		_, err = client.GetMongoClient().BatchUpdate(ctx, model.CollectionService, serviceOps)
+		_, err = dmongo.GetClient().GetDB().Collection(model.CollectionService).BulkWrite(ctx, serviceOps)
 		if err != nil {
 			return discovery.NewError(discovery.ErrInternal, err.Error())
 		}
@@ -914,7 +917,7 @@ func (ds *MetadataManager) modifySchema(ctx context.Context, serviceID string, s
 		mutil.SchemaSummary(schema.Summary),
 	)
 	updateFilter := mutil.NewFilter(mutil.Set(setFilter))
-	err = dao.UpdateSchema(ctx, filter, updateFilter, options.FindOneAndUpdate().SetUpsert(true))
+	err = dao.UpdateSchema(ctx, filter, updateFilter, options.Update().SetUpsert(true))
 	if err != nil {
 		return discovery.NewError(discovery.ErrInternal, err.Error())
 	}
@@ -1312,26 +1315,53 @@ func (ds *MetadataManager) FindInstances(ctx context.Context, request *discovery
 	return ds.findInstance(ctx, request, provider, rev)
 }
 
+func (ds *MetadataManager) PutInstance(ctx context.Context, request *discovery.RegisterInstanceRequest) error {
+	instance := request.Instance
+	serviceID := instance.ServiceId
+	instanceID := instance.InstanceId
+	filter := mutil.NewBasicFilter(ctx, mutil.InstanceServiceID(serviceID), mutil.InstanceInstanceID(instanceID))
+	exist, err := ExistInstance(ctx, serviceID, instanceID)
+	if err != nil {
+		log.Error(fmt.Sprintf("update instance %s/%s failed", serviceID, instanceID), err)
+		return discovery.NewError(discovery.ErrInternal, err.Error())
+	}
+	if !exist {
+		log.Error(fmt.Sprintf("update instance %s/%s failed, instance does not exist",
+			serviceID, instanceID), err)
+		return discovery.NewError(discovery.ErrInstanceNotExists, "Service instance does not exist.")
+	}
+
+	setFilter := mutil.NewFilter(
+		mutil.Instance(instance),
+	)
+	updateFilter := mutil.NewFilter(mutil.Set(setFilter))
+	if err := dao.UpdateInstance(ctx, filter, updateFilter); err != nil {
+		log.Error(fmt.Sprintf("update instance %s/%s failed", serviceID, instanceID), err)
+		return err
+	}
+
+	log.Info(fmt.Sprintf("update instance[%s/%s] successfully", serviceID, instanceID))
+	return nil
+}
+
 func (ds *MetadataManager) PutInstanceStatus(ctx context.Context, request *discovery.UpdateInstanceStatusRequest) error {
 	updateStatusFlag := util.StringJoin([]string{request.ServiceId, request.InstanceId, request.Status}, "/")
 
 	// todo finish get instance
 	filter := mutil.NewBasicFilter(ctx, mutil.InstanceServiceID(request.ServiceId), mutil.InstanceInstanceID(request.InstanceId))
-	instance, err := GetInstance(ctx, request.ServiceId, request.InstanceId)
+	exist, err := ExistInstance(ctx, request.ServiceId, request.InstanceId)
 	if err != nil {
 		log.Error(fmt.Sprintf("update instance %s status failed", updateStatusFlag), err)
 		return discovery.NewError(discovery.ErrInternal, err.Error())
 	}
-	if instance == nil {
+	if !exist {
 		log.Error(fmt.Sprintf("update instance %s status failed, instance does not exist", updateStatusFlag), err)
 		return discovery.NewError(discovery.ErrInstanceNotExists, "Service instance does not exist.")
 	}
 
-	copyInstanceRef := *instance
-	copyInstanceRef.Instance.Status = request.Status
 	setFilter := mutil.NewFilter(
 		mutil.InstanceModTime(strconv.FormatInt(time.Now().Unix(), baseTen)),
-		mutil.InstanceStatus(copyInstanceRef.Instance.Status),
+		mutil.InstanceStatus(request.Status),
 	)
 	updateFilter := mutil.NewFilter(mutil.Set(setFilter))
 	if err := dao.UpdateInstance(ctx, filter, updateFilter); err != nil {
@@ -1347,24 +1377,20 @@ func (ds *MetadataManager) PutInstanceProperties(ctx context.Context, request *d
 	instanceFlag := util.StringJoin([]string{request.ServiceId, request.InstanceId}, "/")
 	domain := util.ParseDomain(ctx)
 	project := util.ParseProject(ctx)
-	instance, err := GetInstance(ctx, request.ServiceId, request.InstanceId)
+	exist, err := ExistInstance(ctx, request.ServiceId, request.InstanceId)
 	if err != nil {
 		log.Error(fmt.Sprintf("update instance %s properties failed", instanceFlag), err)
 		return discovery.NewError(discovery.ErrInternal, err.Error())
 	}
-	if instance == nil {
+	if !exist {
 		log.Error(fmt.Sprintf("update instance %s properties failed, instance does not exist", instanceFlag), err)
 		return discovery.NewError(discovery.ErrInstanceNotExists, "Service instance does not exist.")
 	}
 
-	copyInstanceRef := *instance
-	copyInstanceRef.Instance.Properties = request.Properties
-
-	// todo finish update instance
 	filter := mutil.NewDomainProjectFilter(domain, project, mutil.InstanceServiceID(request.ServiceId), mutil.InstanceInstanceID(request.InstanceId))
 	setFilter := mutil.NewFilter(
 		mutil.InstanceModTime(strconv.FormatInt(time.Now().Unix(), baseTen)),
-		mutil.InstanceProperties(copyInstanceRef.Instance.Properties),
+		mutil.InstanceProperties(request.Properties),
 	)
 	updateFilter := mutil.NewFilter(mutil.Set(setFilter))
 	if err := dao.UpdateInstance(ctx, filter, updateFilter); err != nil {
@@ -1384,7 +1410,7 @@ func (ds *MetadataManager) UnregisterInstance(ctx context.Context, request *disc
 	instanceFlag := util.StringJoin([]string{serviceID, instanceID}, "/")
 
 	filter := mutil.NewBasicFilter(ctx, mutil.InstanceServiceID(serviceID), mutil.InstanceInstanceID(instanceID))
-	result, err := client.GetMongoClient().Delete(ctx, model.CollectionInstance, filter)
+	result, err := dmongo.GetClient().GetDB().Collection(model.CollectionInstance).DeleteMany(ctx, filter)
 	if err != nil {
 		log.Error(fmt.Sprintf("unregister instance failed, instance %s, operator %s revoke instance failed",
 			instanceFlag, remoteIP), err)
@@ -1463,9 +1489,9 @@ func registryInstance(ctx context.Context, request *discovery.RegisterInstanceRe
 		Instance:    instance,
 	}
 
-	insertRes, err := client.GetMongoClient().Insert(ctx, model.CollectionInstance, data)
+	insertRes, err := dmongo.GetClient().GetDB().Collection(model.CollectionInstance).InsertOne(ctx, data)
 	if err != nil {
-		if client.IsDuplicateKey(err) {
+		if dao.IsDuplicateKey(err) {
 			return &discovery.RegisterInstanceResponse{
 				InstanceId: instanceID,
 			}, nil
@@ -1491,7 +1517,7 @@ func registryInstances(ctx context.Context, instances []interface{}) error {
 	opts := options.InsertManyOptions{}
 	opts.SetOrdered(false)
 	opts.SetBypassDocumentValidation(true)
-	_, err := client.GetMongoClient().BatchInsert(ctx, model.CollectionInstance, instances, &opts)
+	_, err := dmongo.GetClient().GetDB().Collection(model.CollectionInstance).InsertMany(ctx, instances, &opts)
 	if err != nil {
 		log.Error("Batch register instance failed", err)
 		return discovery.NewError(discovery.ErrUnavailableBackend, err.Error())

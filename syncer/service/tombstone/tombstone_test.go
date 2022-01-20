@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package tombstone
+package tombstone_test
 
 import (
 	"context"
@@ -26,12 +26,13 @@ import (
 	"github.com/apache/servicecomb-service-center/eventbase/model"
 	"github.com/apache/servicecomb-service-center/eventbase/service/tombstone"
 	"github.com/apache/servicecomb-service-center/eventbase/test"
+	synctombstone "github.com/apache/servicecomb-service-center/syncer/service/tombstone"
 	"github.com/go-chassis/cari/sync"
 	"github.com/stretchr/testify/assert"
 )
 
 func init() {
-	err := datasource.Init(test.DbCfg)
+	err := datasource.Init(test.DBKind)
 	if err != nil {
 		panic(err)
 	}
@@ -62,31 +63,40 @@ func TestDeleteExpireTombStone(t *testing.T) {
 	})
 
 	t.Run("list tombstone service", func(t *testing.T) {
-		t.Run("list all tombstones in default domain and default project should pass", func(t *testing.T) {
-			listReq := model.ListTombstoneRequest{
-				Domain:          testDomain,
-				Project:         testProject,
-				BeforeTimestamp: time.Now().Add(-time.Hour * 24).UnixNano(),
-			}
-			tombstones, err := tombstone.List(context.Background(), &listReq)
-			assert.Nil(t, err)
-			assert.Equal(t, 2, len(tombstones))
-		})
+		listReq := model.ListTombstoneRequest{
+			Domain:          testDomain,
+			Project:         testProject,
+			BeforeTimestamp: time.Now().Add(-time.Hour * 24).UnixNano(),
+		}
+		tombstones, err := tombstone.List(context.Background(), &listReq)
+		assert.Nil(t, err)
+		assert.Equal(t, 2, len(tombstones))
 	})
 
 	t.Run("delete expire tombstone service", func(t *testing.T) {
-		t.Run("delete expire tombstones in default domain and default project should pass", func(t *testing.T) {
-			err := DeleteExpireTombStone()
-			assert.Nil(t, err)
+		err := synctombstone.DeleteExpireTombStone()
+		assert.Nil(t, err)
 
-			listReq := model.ListTombstoneRequest{
-				Domain:  testDomain,
-				Project: testProject,
-			}
-			tombstones, err := tombstone.List(context.Background(), &listReq)
-			assert.Nil(t, err)
-			assert.Equal(t, 1, len(tombstones))
-		})
+		listReq := model.ListTombstoneRequest{
+			Domain:  testDomain,
+			Project: testProject,
+		}
+		tombstones, err := tombstone.List(context.Background(), &listReq)
+		assert.Nil(t, err)
+		assert.Equal(t, 1, len(tombstones))
+
+	})
+
+	t.Run("delete all tombstones test data", func(t *testing.T) {
+		listReq := model.ListTombstoneRequest{
+			Domain:  testDomain,
+			Project: testProject,
+		}
+		tombstones, err := tombstone.List(context.Background(), &listReq)
+		assert.Nil(t, err)
+
+		err = tombstone.Delete(context.Background(), tombstones...)
+		assert.Nil(t, err)
 	})
 
 }

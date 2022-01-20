@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/apache/servicecomb-service-center/datasource"
@@ -39,6 +40,11 @@ import (
 const (
 	defaultMinInterval = 5 * time.Second
 	defaultMinTimes    = 3
+)
+
+var (
+	once          sync.Once
+	propertiesMap map[string]string
 )
 
 func RegisterInstance(ctx context.Context, in *pb.RegisterInstanceRequest) (*pb.RegisterInstanceResponse, error) {
@@ -97,7 +103,29 @@ func populateInstanceDefaultValue(ctx context.Context, instance *pb.MicroService
 		return pb.NewError(pb.ErrServiceNotExists, "Invalid 'serviceID' in request body.")
 	}
 	instance.Version = microservice.Version
+
+	setPropertiesToInstance(instance)
 	return nil
+}
+
+func setPropertiesToInstance(instance *pb.MicroServiceInstance) {
+	if instance.Properties == nil {
+		instance.Properties = make(map[string]string)
+	}
+
+	once.Do(func() {
+		propertiesMap = config.GetStringMap("registry.instance.properties")
+	})
+
+	if len(propertiesMap) <= 0 {
+		return
+	}
+
+	for k, v := range propertiesMap {
+		if _, ok := instance.Properties[k]; !ok {
+			instance.Properties[k] = v
+		}
+	}
 }
 
 func UnregisterInstance(ctx context.Context, in *pb.UnregisterInstanceRequest) error {
@@ -314,6 +342,17 @@ func AppendFindResponse(ctx context.Context, index int64, resp *pb.Response, ins
 	})
 }
 
+func PutInstance(ctx context.Context, in *pb.RegisterInstanceRequest) error {
+	remoteIP := util.GetIPFromContext(ctx)
+
+	if err := validator.ValidateRegisterInstanceRequest(in); err != nil {
+		log.Error(fmt.Sprintf("update instance failed, invalid parameters, operator %s", remoteIP), err)
+		return pb.NewError(pb.ErrInvalidParams, err.Error())
+	}
+
+	return datasource.GetMetadataManager().PutInstance(ctx, in)
+}
+
 func PutInstanceStatus(ctx context.Context, in *pb.UpdateInstanceStatusRequest) error {
 	remoteIP := util.GetIPFromContext(ctx)
 
@@ -376,4 +415,12 @@ func checkInstanceQuota(ctx context.Context) error {
 		return quotasvc.ApplyInstance(ctx, 1)
 	}
 	return nil
+}
+
+func InstanceUsage(ctx context.Context, request *pb.GetServiceCountRequest) (int64, error) {
+	resp, err := datasource.GetMetadataManager().CountInstance(ctx, request)
+	if err != nil {
+		return 0, err
+	}
+	return resp.Count, nil
 }

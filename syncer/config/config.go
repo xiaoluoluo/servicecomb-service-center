@@ -51,13 +51,7 @@ type Tombstone struct {
 }
 
 func Init() error {
-	err := archaius.Init(archaius.WithMemorySource(), archaius.WithENVSource())
-	if err != nil {
-		log.Fatal("can not init archaius", err)
-		return err
-	}
-
-	err = archaius.AddFile(filepath.Join(util.GetAppRoot(), "conf", "syncer.yaml"))
+	err := archaius.AddFile(filepath.Join(util.GetAppRoot(), "conf", "syncer.yaml"))
 	if err != nil {
 		log.Warn(fmt.Sprintf("can not add syncer config file source, error: %s", err))
 		return err

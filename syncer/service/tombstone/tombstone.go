@@ -25,7 +25,7 @@ import (
 	"github.com/apache/servicecomb-service-center/eventbase/model"
 	"github.com/apache/servicecomb-service-center/eventbase/service/tombstone"
 	"github.com/apache/servicecomb-service-center/pkg/log"
-	"github.com/apache/servicecomb-service-center/syncer/config"
+	"github.com/apache/servicecomb-service-center/server/config"
 )
 
 const (
@@ -57,21 +57,15 @@ func DeleteExpireTombStone() error {
 }
 
 func getExpireTime() time.Duration {
-	config := config.GetConfig()
-	if config.Sync == nil || config.Sync.Tombstone == nil {
-		log.Warn("tombstone expireTime is empty")
+	reserve := config.GetString("sync.tombstone.retire.reserve", "")
+	if len(reserve) <= 0 {
+		log.Warn("tombstone reserve is empty")
 		return defaultExpireTime
 	}
 
-	exprTimeStr := config.Sync.Tombstone.ExpireTime
-	if len(exprTimeStr) <= 0 {
-		log.Warn("tombstone expireTime is empty")
-		return defaultExpireTime
-	}
-
-	expireTime, err := time.ParseDuration(exprTimeStr)
+	expireTime, err := time.ParseDuration(reserve)
 	if err != nil {
-		log.Error(fmt.Sprintf("tombstone expireTime parseDuration expire:%s", exprTimeStr), err)
+		log.Error(fmt.Sprintf("tombstone expireTime parseDuration expire:%s", reserve), err)
 		return defaultExpireTime
 	}
 	return expireTime

@@ -18,8 +18,6 @@
 package model
 
 const (
-	DBName = "servicecomb"
-
 	CollectionTask      = "task"
 	CollectionTombstone = "tombstone"
 	ColumnDomain        = "domain"

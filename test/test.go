@@ -22,33 +22,42 @@ import (
 	"context"
 	"time"
 
+	"github.com/go-chassis/cari/db"
+	"github.com/go-chassis/cari/db/config"
+	"github.com/go-chassis/go-archaius"
+	"github.com/little-cui/etcdadpt"
+
 	_ "github.com/apache/servicecomb-service-center/server/init"
 
 	_ "github.com/apache/servicecomb-service-center/eventbase/bootstrap"
 	_ "github.com/apache/servicecomb-service-center/server/bootstrap"
+	_ "github.com/go-chassis/cari/db/bootstrap"
 	_ "github.com/go-chassis/go-chassis-extension/protocol/grpc/server"
 
 	"github.com/apache/servicecomb-service-center/datasource"
 	edatasource "github.com/apache/servicecomb-service-center/eventbase/datasource"
 	"github.com/apache/servicecomb-service-center/server/metrics"
 	"github.com/apache/servicecomb-service-center/server/service/registry"
-	"github.com/go-chassis/cari/db"
-	"github.com/go-chassis/go-archaius"
-	"github.com/little-cui/etcdadpt"
 )
 
 func init() {
 	var kind = "etcd"
 	var uri = "http://127.0.0.1:2379"
 	_ = archaius.Set("rbac.releaseLockAfter", "3s")
+	_ = archaius.Set("registry.instance.properties.engineID", "test_engineID")
+	_ = archaius.Set("registry.instance.properties.engineName", "test_engineName")
 	if IsETCD() {
 		_ = archaius.Set("registry.cache.mode", 0)
 		_ = archaius.Set("discovery.kind", "etcd")
 		_ = archaius.Set("registry.kind", "etcd")
+		_ = archaius.Set("registry.etcd.cluster.name", "sc-0")
+		_ = archaius.Set("registry.etcd.cluster.endpoints", "sc-0="+uri+",sc-1=http://127.0.0.2:2379")
 	} else {
 		_ = archaius.Set("registry.heartbeat.kind", "checker")
 		kind = "mongo"
+		uri = "mongodb://127.0.0.1:27017"
 	}
+
 	_ = datasource.Init(datasource.Options{
 		Config: etcdadpt.Config{
 			Kind: kind,
@@ -56,23 +65,15 @@ func init() {
 	})
 	_ = metrics.Init(metrics.Options{})
 
-	if kind == "mongo" {
-		uri = "mongodb://127.0.0.1:27017"
-	}
-
-	err := edatasource.Init(db.Config{
+	_ = db.Init(&config.Config{
 		Kind:    kind,
 		URI:     uri,
 		Timeout: 10 * time.Second,
 	})
-	if err != nil {
-		panic(err)
-	}
 
-	err = registry.SelfRegister(context.Background())
-	if err != nil {
-		panic(err)
-	}
+	_ = edatasource.Init(kind)
+
+	_ = registry.SelfRegister(context.Background())
 }
 
 func IsETCD() bool {

@@ -19,15 +19,6 @@ package datasource
 
 import (
 	"fmt"
-	"time"
-
-	"github.com/go-chassis/cari/db"
-	"github.com/go-chassis/openlog"
-)
-
-const (
-	DefaultTimeout = 60 * time.Second
-	DefaultDBKind  = "embedded_etcd"
 )
 
 var (
@@ -35,7 +26,7 @@ var (
 	plugins        = make(map[string]dataSourceEngine)
 )
 
-type dataSourceEngine func(c *db.Config) (DataSource, error)
+type dataSourceEngine func() DataSource
 
 func GetDataSource() DataSource {
 	return dataSourceInst
@@ -45,34 +36,12 @@ func RegisterPlugin(name string, engineFunc dataSourceEngine) {
 	plugins[name] = engineFunc
 }
 
-func Init(c db.Config) error {
-	var err error
-	if c.Kind == "" {
-		c.Kind = DefaultDBKind
-	}
-	f, ok := plugins[c.Kind]
+func Init(kind string) error {
+	f, ok := plugins[kind]
 	if !ok {
-		return fmt.Errorf("do not support %s", c.Kind)
+		return fmt.Errorf("do not support %s", kind)
 	}
-	if c.Timeout == 0 {
-		c.Timeout = DefaultTimeout
-	}
-	dbc := &db.Config{
-		Kind:        c.Kind,
-		URI:         c.URI,
-		PoolSize:    c.PoolSize,
-		SSLEnabled:  c.SSLEnabled,
-		RootCA:      c.RootCA,
-		CertFile:    c.CertFile,
-		CertPwdFile: c.CertPwdFile,
-		KeyFile:     c.KeyFile,
-		Timeout:     c.Timeout,
-	}
-
-	if dataSourceInst, err = f(dbc); err != nil {
-		return err
-	}
-	openlog.Info(fmt.Sprintf("use %s as storage", c.Kind))
+	dataSourceInst = f()
 	return nil
 }
 

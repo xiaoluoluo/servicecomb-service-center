@@ -19,6 +19,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/apache/servicecomb-service-center/datasource"
@@ -65,8 +66,9 @@ func InitRegistration() {
 	}
 
 	Instance = &discovery.MicroServiceInstance{
-		Status:   discovery.MSI_UP,
-		HostName: util.HostName(),
+		Status:    discovery.MSI_UP,
+		HostName:  util.HostName(),
+		Endpoints: getEndpoints(),
 		HealthCheck: &discovery.HealthCheck{
 			Mode:     discovery.CHECK_BY_HEARTBEAT,
 			Interval: RegistryDefaultLeaseRenewalInterval,
@@ -74,9 +76,9 @@ func InitRegistration() {
 		},
 	}
 
-	name := config.GetString("registry.instance.datacenter.name", " ")
-	region := config.GetString("registry.instance.datacenter.region", " ")
-	availableZone := config.GetString("registry.instance.datacenter.availableZone", " ")
+	name := config.GetString("registry.instance.datacenter.name", "")
+	region := config.GetString("registry.instance.datacenter.region", "")
+	availableZone := config.GetString("registry.instance.datacenter.availableZone", "")
 	if len(name) > 0 && len(region) > 0 && len(availableZone) > 0 {
 		Instance.DataCenterInfo = &discovery.DataCenterInfo{
 			Name:          name,
@@ -84,6 +86,19 @@ func InitRegistration() {
 			AvailableZone: availableZone,
 		}
 	}
+}
+
+func getEndpoints() []string {
+	hostPort := config.GetString("registry.instance.endpoint",
+		config.GetString("server.host", "127.0.0.1", config.WithStandby("httpaddr")))
+	if strings.LastIndex(hostPort, ":") < 0 {
+		hostPort += ":" + config.GetString("server.port", "30100", config.WithStandby("httpport"))
+	}
+	endpoint := fmt.Sprintf("rest://%s/", hostPort)
+	if config.GetSSL().SslEnabled {
+		endpoint += "?sslEnabled=true"
+	}
+	return []string{endpoint}
 }
 
 func AddDefaultContextValue(ctx context.Context) context.Context {
