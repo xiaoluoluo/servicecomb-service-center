@@ -14,9 +14,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package bootstrap
 
 import (
+	//cari db
+	_ "github.com/go-chassis/cari/db/bootstrap"
+
+	//eventbase
+	_ "github.com/apache/servicecomb-service-center/eventbase/bootstrap"
+
 	//etcd
 	_ "github.com/apache/servicecomb-service-center/datasource/etcd/bootstrap"
 
@@ -51,9 +58,6 @@ import (
 
 	//module 'admin'
 	_ "github.com/apache/servicecomb-service-center/server/rest/admin"
-
-	//module 'syncer'
-	_ "github.com/apache/servicecomb-service-center/server/rest/syncer"
 
 	//governance
 	_ "github.com/apache/servicecomb-service-center/server/service/gov/kie"

@@ -25,6 +25,7 @@ import (
 	"github.com/apache/servicecomb-service-center/client"
 	grpc "github.com/apache/servicecomb-service-center/pkg/rpc"
 	v1sync "github.com/apache/servicecomb-service-center/syncer/api/v1"
+	syncerclient "github.com/apache/servicecomb-service-center/syncer/client"
 	"github.com/apache/servicecomb-service-center/syncer/config"
 	"github.com/apache/servicecomb-service-center/syncer/metrics"
 	"github.com/apache/servicecomb-service-center/syncer/rpc"
@@ -52,15 +53,14 @@ type Peer struct {
 }
 
 func Health() (*Resp, error) {
-
-	config := config.GetConfig()
-	if config.Sync == nil || len(config.Sync.Peers) <= 0 {
+	cfg := config.GetConfig()
+	if cfg.Sync == nil || len(cfg.Sync.Peers) <= 0 {
 		return nil, ErrConfigIsEmpty
 	}
 
-	resp := &Resp{Peers: make([]*Peer, 0, len(config.Sync.Peers))}
+	resp := &Resp{Peers: make([]*Peer, 0, len(cfg.Sync.Peers))}
 
-	for _, c := range config.Sync.Peers {
+	for _, c := range cfg.Sync.Peers {
 		if len(c.Endpoints) <= 0 {
 			continue
 		}
@@ -74,6 +74,8 @@ func Health() (*Resp, error) {
 		resp.Peers = append(resp.Peers, p)
 	}
 
+	reportMetrics(resp.Peers)
+
 	if len(resp.Peers) <= 0 {
 		return nil, ErrConfigIsEmpty
 	}
@@ -82,7 +84,12 @@ func Health() (*Resp, error) {
 }
 
 func getPeerStatus(peerName string, endpoints []string) string {
-	conn, err := grpc.GetRoundRobinLbConn(&grpc.Config{Addrs: endpoints, Scheme: scheme, ServiceName: serviceName})
+	conn, err := grpc.GetRoundRobinLbConn(&grpc.Config{
+		Addrs:       endpoints,
+		Scheme:      scheme,
+		ServiceName: serviceName,
+		TLSConfig:   syncerclient.RPClientConfig(),
+	})
 	if err != nil || conn == nil {
 		return rpc.HealthStatusAbnormal
 	}
@@ -102,4 +109,16 @@ func reportClockDiff(peerName string, local int64, resp int64) {
 	curr := time.Now().UnixNano()
 	spent := (curr - local) / 2
 	metrics.PeersClockDiffSet(peerName, local+spent-resp)
+}
+
+func reportMetrics(peers []*Peer) {
+	var connectPeersCount int64
+	for _, peer := range peers {
+		if peer.Status == rpc.HealthStatusConnected {
+			connectPeersCount++
+		}
+	}
+
+	metrics.ConnectedPeersSet(int64(len(peers)))
+	metrics.PeersTotalSet(connectPeersCount)
 }

@@ -1,7 +1,7 @@
 package sync
 
 import (
-	"context"
+	"fmt"
 
 	// glint
 	_ "github.com/apache/servicecomb-service-center/eventbase/bootstrap"
@@ -10,8 +10,6 @@ import (
 	"github.com/apache/servicecomb-service-center/syncer/service/event"
 	"github.com/apache/servicecomb-service-center/syncer/service/replicator"
 	"github.com/apache/servicecomb-service-center/syncer/service/task"
-
-	"github.com/go-chassis/foundation/gopool"
 )
 
 func Init() {
@@ -20,9 +18,7 @@ func Init() {
 		return
 	}
 
-	gopool.Go(func(ctx context.Context) {
-		Work()
-	})
+	Work()
 }
 
 func Work() {
@@ -32,7 +28,7 @@ func Work() {
 func work() {
 	err := replicator.Work()
 	if err != nil {
-		log.Warn(err.Error())
+		log.Warn(fmt.Sprintf("replicate work init failed, %s", err.Error()))
 		return
 	}
 

@@ -18,12 +18,15 @@
 package datasource
 
 import (
+	"context"
 	"fmt"
+
+	"github.com/go-chassis/cari/dlock"
 
 	"github.com/apache/servicecomb-service-center/datasource/rbac"
 	"github.com/apache/servicecomb-service-center/datasource/schema"
+	"github.com/apache/servicecomb-service-center/eventbase/datasource"
 	"github.com/apache/servicecomb-service-center/pkg/log"
-	"github.com/go-chassis/cari/dlock"
 )
 
 type dataSourceEngine func(opts Options) (DataSource, error)
@@ -49,6 +52,10 @@ func Init(opts Options) error {
 	if err != nil {
 		return err
 	}
+	err = GetSyncManager().SyncAll(context.Background())
+	if err != nil && err != ErrSyncAllKeyExists {
+		return err
+	}
 	err = schema.Init(schema.Options{Kind: opts.Kind})
 	if err != nil {
 		return err
@@ -57,10 +64,15 @@ func Init(opts Options) error {
 	if err != nil {
 		return err
 	}
-	err = dlock.Init(dlock.Options{
-		Kind: opts.Kind,
+	err = dlock.Init(dlock.Options{Kind: opts.Kind})
+	if err != nil {
+		return err
+	}
+	// init eventbase
+	err = datasource.Init(&datasource.Config{
+		Kind:   opts.Kind,
+		Logger: log.Logger,
 	})
-
 	return err
 }
 
@@ -92,4 +104,7 @@ func GetDependencyManager() DependencyManager {
 }
 func GetMetricsManager() MetricsManager {
 	return dataSourceInst.MetricsManager()
+}
+func GetSyncManager() SyncManager {
+	return dataSourceInst.SyncManager()
 }

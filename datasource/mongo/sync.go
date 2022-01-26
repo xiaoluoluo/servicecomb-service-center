@@ -15,27 +15,20 @@
  * limitations under the License.
  */
 
-package syncer
+package mongo
 
 import (
-	"net/http"
+	"context"
 
-	"github.com/apache/servicecomb-service-center/server/rest/syncer/service"
-
-	"github.com/apache/servicecomb-service-center/pkg/rest"
+	"github.com/apache/servicecomb-service-center/pkg/log"
 )
 
-// Syncer 有关的接口
-type Controller struct {
+type SyncManager struct {
 }
 
-// URLPatterns 路由
-func (ctrl *Controller) URLPatterns() []rest.Route {
-	return []rest.Route{
-		{Method: http.MethodGet, Path: "/v4/syncer/watch", Func: ctrl.WatchInstance},
-	}
-}
-
-func (ctrl *Controller) WatchInstance(w http.ResponseWriter, r *http.Request) {
-	service.ServiceAPI.WatchInstance(w, r)
+// SyncAll will list all services,accounts,roles,schemas,tags,deps and use tasks to store
+func (s *SyncManager) SyncAll(ctx context.Context) error {
+	// TODO mongo should implement it
+	log.Info("Mongo does not implement this method")
+	return nil
 }

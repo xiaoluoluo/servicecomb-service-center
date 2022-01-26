@@ -15,20 +15,34 @@
  * limitations under the License.
  */
 
-package syncer
+package sync
 
 import (
-	roa "github.com/apache/servicecomb-service-center/pkg/rest"
+	"context"
+	"sync"
+
+	"github.com/apache/servicecomb-service-center/pkg/util"
 	"github.com/apache/servicecomb-service-center/server/config"
 )
 
-func init() {
-	registerREST()
+var (
+	enable bool
+	once   sync.Once
+)
+
+func Enable() bool {
+	once.Do(func() {
+		if config.GetBool("sync.enableOnStart", false) {
+			enable = true
+		}
+	})
+	return enable
 }
 
-func registerREST() {
-	syncerEnabled := config.GetBool("syncer.enabled", false)
-	if syncerEnabled {
-		roa.RegisterServant(&Controller{})
+func SetContext(ctx context.Context) context.Context {
+	var val string
+	if Enable() {
+		val = "1"
 	}
+	return util.SetContext(ctx, util.CtxEnableSync, val)
 }
